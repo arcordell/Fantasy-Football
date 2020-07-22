@@ -1,4 +1,4 @@
-#library(xlsx)
+library(xlsx)
 library(CVXR)
 library(dplyr)
 library(tidyr)
@@ -43,7 +43,7 @@ trade_data_2 <- trade_data %>%
          grepl("Round", side1_player1) == FALSE, grepl("Round", side1_player2) == FALSE, grepl("Round", side1_player3) == FALSE,
          grepl("Round", side2_player1) == FALSE, grepl("Round", side2_player2) == FALSE, grepl("Round", side2_player3) == FALSE) %>%
   select(-c(side1_player1:side1_player3, side2_player1:side2_player3), c(side1_player1:side1_player3, side2_player1:side2_player3)) %>%
-  filter(trade_date >= as.Date("2019-9-1"))
+  filter(trade_date >= as.Date("2019-9-2"))
 
 #Organize the data by player
 player_data <- trade_data_2 %>%
