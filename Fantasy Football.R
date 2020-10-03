@@ -1,4 +1,3 @@
-library(xlsx)
 library(CVXR)
 library(dplyr)
 library(tidyr)
@@ -7,14 +6,21 @@ library(tibble)
 library(ggplot2)
 library(ggthemes)
 library(lubridate)
+library(writexl)
 
-trade_data <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/tradedata.csv")
+trade_data <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/Trade Data/tradedata-9-28-2020.csv")
+date_start <- as.Date("2020-07-01")
+min_trades_for_init <- 30
+min_trades_for_val <- 10
+average_player_value <- 20
+
 #https://www.rdocumentation.org/packages/glmc/versions/0.3-1/topics/glmc
 #convex optimization https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.lsq_linear.html
 
 remove_brackets <- function (x) {
   x <- gsub("[","",x, fixed = TRUE)
   x <- gsub("]","",x, fixed = TRUE)
+  x <- gsub('\"', "", x, fixed = TRUE)
 }
 
 #Add fields to the data so that it is easier to use
@@ -37,13 +43,14 @@ trade_data_2 <- trade_data %>%
          side1_player2 != side2_player3 | is.na(side1_player2) | is.na(side2_player3),
          side1_player3 != side2_player1 | is.na(side1_player3) | is.na(side2_player1),
          side1_player3 != side2_player2 | is.na(side1_player3) | is.na(side2_player2),
-         side1_player3 != side2_player3 | is.na(side1_player3) | is.na(side2_player3),
-         grepl("Pick", side1_player1) == FALSE, grepl("Pick", side1_player2) == FALSE, grepl("Pick", side1_player3) == FALSE,
-         grepl("Pick", side2_player1) == FALSE, grepl("Pick", side2_player2) == FALSE, grepl("Pick", side2_player3) == FALSE,
-         grepl("Round", side1_player1) == FALSE, grepl("Round", side1_player2) == FALSE, grepl("Round", side1_player3) == FALSE,
-         grepl("Round", side2_player1) == FALSE, grepl("Round", side2_player2) == FALSE, grepl("Round", side2_player3) == FALSE) %>%
+         side1_player3 != side2_player3 | is.na(side1_player3) | is.na(side2_player3)
+         #grepl("Pick", side1_player1) == FALSE, grepl("Pick", side1_player2) == FALSE, grepl("Pick", side1_player3) == FALSE,
+         #grepl("Pick", side2_player1) == FALSE, grepl("Pick", side2_player2) == FALSE, grepl("Pick", side2_player3) == FALSE,
+         #grepl("Round", side1_player1) == FALSE, grepl("Round", side1_player2) == FALSE, grepl("Round", side1_player3) == FALSE,
+         #grepl("Round", side2_player1) == FALSE, grepl("Round", side2_player2) == FALSE, grepl("Round", side2_player3) == FALSE
+         ) %>%
   select(-c(side1_player1:side1_player3, side2_player1:side2_player3), c(side1_player1:side1_player3, side2_player1:side2_player3)) %>%
-  filter(trade_date >= as.Date("2019-9-2"))
+  filter(trade_date >= date_start)
 
 #Organize the data by player
 player_data <- trade_data_2 %>%
@@ -70,7 +77,7 @@ trades_min_player <- player_data_2 %>%
 #Filter to trades where every player was traded at least 10 times
 player_data_3 <- player_data_2 %>%
   left_join(trades_min_player, by = "trade_id") %>%
-  filter(min_player >= 50)
+  filter(min_player >= min_trades_for_init)
 
 #Find the number of times each player was traded
 player_num_trades_2 <- player_data_3 %>%
@@ -93,7 +100,7 @@ Y <- rep(0, nrow(X))
 
 #Find the player values
 objective <- Minimize(sum((Y - X %*% betaHat)^2))
-problem <- Problem(objective, constraints = list(betaHat >= 0, mean(betaHat) == 20))
+problem <- Problem(objective, constraints = list(betaHat >= 0, mean(betaHat) == average_player_value))
 result <- solve(problem)
 player_values <- data.frame(player_name = (names(player_wide[-c(1:2)])), value = round(result$getValue(betaHat), 1))
 
@@ -157,11 +164,6 @@ all_player_1 <- trade_data_2[rep(seq_len(nrow(trade_data_2)), 6), ] %>%
   rename(new_side2_player2_value = value) %>%
   left_join(player_values, by = c("new_side2_player3" = "player_name")) %>%
   rename(new_side2_player3_value = value) %>%
-  filter(is.na(new_side1_player2) | !is.na(new_side1_player2_value),
-         is.na(new_side1_player3) | !is.na(new_side1_player3_value),
-         is.na(new_side2_player1) | !is.na(new_side2_player1_value),
-         is.na(new_side2_player2) | !is.na(new_side2_player2_value),
-         is.na(new_side2_player3) | !is.na(new_side2_player3_value)) %>%
   mutate_at(vars(new_side1_player1_value:new_side2_player3_value), ~replace(., is.na(.), 0)) %>%
   mutate(implied_value = new_side2_player1_value + new_side2_player2_value + new_side2_player3_value - new_side1_player2_value - new_side1_player3_value,
          color_val = case_when(
@@ -170,17 +172,16 @@ all_player_1 <- trade_data_2[rep(seq_len(nrow(trade_data_2)), 6), ] %>%
            TRUE ~ "gray"
          ),
          fill_val = case_when(
-           !is.na(new_side1_player3) ~ "Traded with 2 other players for 1 player",
-           !is.na(new_side2_player3) ~ "Traded for 3 players",
-           !is.na(new_side1_player2) ~ "Traded with 1 other player for 1 player",
-           !is.na(new_side2_player2) ~ "Traded for 2 players",
-           TRUE ~ "Traded for 1 player"
+          !is.na(new_side1_player2) & !is.na(new_side1_player3) ~ "Traded with 2 other players",
+          !is.na(new_side2_player2) & !is.na(new_side2_player3) ~ "Traded for 3 players",
+          !is.na(new_side1_player2) | !is.na(new_side1_player3) ~ "Traded with 1 other player",
+          !is.na(new_side2_player2) | !is.na(new_side2_player3) ~ "Traded for 2 players",
+          TRUE ~ "Traded for 1 player"
          ))
 
 time_constant <- 10
 
-date_start <- as.Date("2019-09-01")
-date_end <- as.Date("2019-11-07")
+date_end <- max(all_player_1$trade_date)
 date_list <- data.frame(date_val = seq(date_start, date_end, by="days"))
 
 #Create the function to get the weighted average of the player values
@@ -195,7 +196,7 @@ players_by_date_1 <- trade_df %>%
 trade_count <- players_by_date_1 %>%
   group_by(player_name) %>%
   summarize(player_trade_count = sum(trade_count)) %>%
-  filter(player_trade_count >= 10)
+  filter(player_trade_count >= min_trades_for_val)
 
 players_by_date_2 <- players_by_date_1 %>%
   inner_join(trade_count, by = "player_name")
@@ -244,7 +245,12 @@ return(all_player_values)
 
 #Model run 1: run with only trades where there was only one player on the left side
 all_player_no_trade_up <- all_player_1 %>%
-  filter(is.na(new_side1_player2))
+      filter(is.na(new_side1_player2) | !is.na(new_side1_player2_value),
+             is.na(new_side1_player3) | !is.na(new_side1_player3_value),
+             is.na(new_side2_player1) | !is.na(new_side2_player1_value),
+             is.na(new_side2_player2) | !is.na(new_side2_player2_value),
+             is.na(new_side2_player3) | !is.na(new_side2_player3_value)) %>%
+  filter(is.na(new_side1_player2), is.na(new_side1_player3))
 
 player_values_by_date_1 <- apply(date_list, 1, find_player_values, trade_df = all_player_no_trade_up)
 player_values_df_1_no_min <- do.call(rbind.data.frame, player_values_by_date_1)
@@ -265,6 +271,11 @@ all_player_2 <- all_player_1 %>%
   left_join(player_values_df_1, by = c("new_side2_player3" = "player_name", "trade_date")) %>%
   rename(s2_p3_value = player_value) %>%
   filter(!is.na(s1_p1_value)) %>%
+  filter(is.na(new_side1_player2) | !is.na(s1_p2_value),
+         is.na(new_side1_player3) | !is.na(s1_p3_value),
+         is.na(new_side2_player1) | !is.na(s2_p1_value),
+         is.na(new_side2_player2) | !is.na(s2_p2_value),
+         is.na(new_side2_player3) | !is.na(s2_p3_value)) %>%
   mutate_at(vars(s1_p1_value:s2_p3_value), ~replace(., is.na(.), 0)) %>%
   mutate(implied_value = s1_p1_value / (s1_p1_value + s1_p2_value + s1_p3_value) * (s2_p1_value + s2_p2_value + s2_p3_value))
 
@@ -290,22 +301,34 @@ all_player_2 <- all_player_2 %>%
   left_join(player_values_df_2, by = c("new_side2_player3" = "player_name", "trade_date")) %>%
   rename(s2_p3_value = player_value) %>%
   filter(!is.na(s1_p1_value)) %>%
+    filter(is.na(new_side1_player2) | !is.na(s1_p2_value),
+           is.na(new_side1_player3) | !is.na(s1_p3_value),
+           is.na(new_side2_player1) | !is.na(s2_p1_value),
+           is.na(new_side2_player2) | !is.na(s2_p2_value),
+           is.na(new_side2_player3) | !is.na(s2_p3_value)) %>%
   mutate_at(vars(s1_p1_value:s2_p3_value), ~replace(., is.na(.), 0)) %>%
   mutate(implied_value = s1_p1_value / (s1_p1_value + s1_p2_value + s1_p3_value) * (s2_p1_value + s2_p2_value + s2_p3_value))
+
+new_side1_players <- all_player_2 %>%
+select(new_side1_player1:new_side1_player3) %>%
+apply(1, function(x) toString(na.omit(x)))
+
+new_side2_players <- all_player_2 %>%
+select(new_side2_player1:new_side2_player3) %>%
+apply(1, function(x) toString(na.omit(x)))
+
+all_player_2 <- bind_cols(all_player_2, new_side1_players = new_side1_players, new_side2_players = new_side2_players)
 
 player_values_by_date_2 <- apply(date_list, 1, find_player_values, trade_df = all_player_2)
 player_values_df_2_no_min <- do.call(rbind.data.frame, player_values_by_date_2)
 player_values_df_2 <- replace_mins(player_values_df_2_no_min)
 }
 
-#Add vertical bar with current value
-#Fit graph to larger window
-
 right = function(text, num_char) {
   substr(text, nchar(text) - (num_char-1), nchar(text))
 }
 
-player_to_graph <- "Stefon Diggs"
+player_to_graph <- "Saquon Barkley"
 
 player_line <- player_values_df_2 %>%
   filter(player_name == player_to_graph)
@@ -315,19 +338,42 @@ last_player_value_tbl <- player_line %>%
 
 last_player_value <- last_player_value_tbl$player_value
 
-one_player <- all_player_2 %>%
-  filter(new_side1_player1 == player_to_graph) %>%
+output_trades <- all_player_2 %>%
   mutate(fill_val = factor(fill_val, levels = c("Traded for 3 players", "Traded for 2 players", "Traded for 1 player",
-                                                "Traded with 1 other player for 1 player", "Traded with 2 other players for 1 player")), player_value = implied_value) %>%
-  select(player_name = new_side1_player1, trade_date, player_value, color_val, fill_val)
+                                                "Traded with 1 other player", "Traded with 2 other players")), player_value = implied_value) %>%
+  select(player_name = new_side1_player1, trade_date, player_value, color_val, fill_val, new_side1_players, new_side2_players)  %>%
+  filter(!(grepl("2019", player_name) | grepl("2020", player_name)))
+
+output_values <- player_values_df_2 %>%
+  filter(!(grepl("2019", player_name) | grepl("2020", player_name)))
+
+date_end_minus_14 <- date_end - 14
+
+end_values <- output_values %>%
+  filter(trade_date == date_end)
+
+end_minus_14_values <- output_values %>%
+  filter(trade_date == date_end_minus_14) %>%
+  rename(player_value_minus_14 = player_value) %>%
+  select(-trade_date)
+
+output_last_values <- end_values %>%
+  left_join(end_minus_14_values, by = "player_name") %>%
+  mutate(change_last_14 = player_value - player_value_minus_14) %>%
+  select(-player_value_minus_14) %>%
+  arrange(desc(player_value)) %>%
+  mutate(ranking = 1:n())
+
+one_player <- output_trades %>%
+  filter(player_name == player_to_graph)
 
 g <- ggplot(data = one_player, aes(x = trade_date, y = player_value)) +
   geom_point(aes(color = color_val, fill = fill_val), size = 4, shape = 21, alpha = 0.8) +
   geom_line(data = player_line, lwd = 2, alpha = 0.4) +
   theme_fivethirtyeight() + 
   scale_color_manual(values = c("blue" = "blue", "gray" = "darkgray", "red" = "red"), guide = FALSE) +
-  scale_fill_manual(values = c("Traded for 3 players" = "darkblue", "Traded with 2 other players for 1 player" = "red3", "Traded for 2 players" = "lightblue",
-                               "Traded for 1 player" = "gray", "Traded with 1 other player for 1 player" = "indianred1")) +
+  scale_fill_manual(values = c("Traded for 3 players" = "darkblue", "Traded with 2 other players" = "red3", "Traded for 2 players" = "lightblue",
+                               "Traded for 1 player" = "gray", "Traded with 1 other player" = "indianred1")) +
   theme(legend.position = "bottom",
         legend.title=element_blank(),
         legend.text = element_text(size = 16),
@@ -337,7 +383,7 @@ g <- ggplot(data = one_player, aes(x = trade_date, y = player_value)) +
         axis.title.x = element_text(size = 24, vjust = -1),
         axis.title.y = element_text(size = 24, vjust = 2),
         panel.background = element_rect(fill = "white")) +
-  labs(title = paste(player_to_graph, "'", ifelse(right(player_to_graph, 1) != "s","s",""), " value over time in the 2019 season", sep = ""),
+  labs(title = paste(player_to_graph, "'", ifelse(right(player_to_graph, 1) != "s","s",""), " value over time in the 2020 season", sep = ""),
        x = "Trade date",
        y = "Value") +
   geom_vline(xintercept = date_end, color = "black", linetype = 3, lwd = 1) +
@@ -351,12 +397,15 @@ g + annotate("label",x = date_end, y = last_player_value + 4 * g_breaks_adj,labe
   geom_label(data = last_player_value_tbl, aes(x = date_end, y = last_player_value + 2.5 * g_breaks_adj,label = paste(round(last_player_value, 1), sep = "")),
            vjust = 1, size = 8, color = "black", fill = "lightsteelblue1", label.padding = unit(0.4, "cm"))
 
+final_player_values <- player_values_df_2 %>%
+  filter(trade_date == date_end)
+
 #Add trade id's as labels, for the back-end
 #Josh could use the trade id's to bring up the trade below the graph, if a circle is hovered over
 #Average 2 for 1 markup
 #Send Josh the raw data
 
 current_date <- as.Date(now())
-write.xlsx(one_player, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Output ", current_date, ".xlsx", sep = ""), sheetName = "Trade Data", append = TRUE)
-write.xlsx(player_line, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Output ", current_date, ".xlsx", sep = ""), sheetName = "Value Data", append = TRUE)
-write.xlsx(last_player_value_tbl, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Output ", current_date, ".xlsx", sep = ""), sheetName = "Last Value", append = TRUE)
+write_xlsx(output_trades, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Trade Data ", current_date, ".xlsx", sep = ""))
+write_xlsx(output_values, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Player Values ", current_date, ".xlsx", sep = ""))
+write_xlsx(output_last_values, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Last Values ", current_date, ".xlsx", sep = ""))
