@@ -7,12 +7,19 @@ library(ggplot2)
 library(ggthemes)
 library(lubridate)
 library(writexl)
+library(readxl)
 
-trade_data <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/Trade Data/tradedata-9-28-2020.csv")
+trade_data <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/Trade Data/tradedata-10-6-2020.csv")
+
+player_details <- read_excel("C:/Users/alexc/Desktop/Fantasy Football/Data/Player Details.xlsx") %>%
+  filter(Position %in% c("QB", "RB", "WR", "TE")) %>%
+  select(Player, Position)
+
 date_start <- as.Date("2020-07-01")
-min_trades_for_init <- 30
-min_trades_for_val <- 10
+players_in_init_optimization <- 200
+min_trades_for_val <- 8
 average_player_value <- 20
+export_data <- "Yes"
 
 #https://www.rdocumentation.org/packages/glmc/versions/0.3-1/topics/glmc
 #convex optimization https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.lsq_linear.html
@@ -25,10 +32,18 @@ remove_brackets <- function (x) {
 
 #Add fields to the data so that it is easier to use
 trade_data_2 <- trade_data %>%
+  filter(league_settings.is_dynasty == "true") %>%
+  rename(num_teams = league_settings.num_teams,
+         num_qbs = league_settings.num_qbs,
+         ppr_type = league_settings.ppr) %>%
+  filter(num_qbs %in% c(1, 2),
+         num_teams %in% c(10, 12, 14, 16),
+         ppr_type %in% c(0, 0.5, 1)) %>%
   mutate(trade_date = as.Date(as.POSIXct(timestamp, origin="1970-01-01")),
          side1_no_brackets = remove_brackets(side1),
          side2_no_brackets = remove_brackets(side2),
-         trade_id = row_number()) %>%
+         trade_id = row_number(),
+         num_qbs = factor(num_qbs)) %>%
   arrange(trade_date) %>%
   separate(side1_no_brackets, c("side1_player1", "side1_player2", "side1_player3", "side1_player4"), sep = ",", remove = FALSE) %>%
   separate(side2_no_brackets, c("side2_player1", "side2_player2", "side2_player3", "side2_player4"), sep = ",", remove = FALSE) %>%
@@ -43,12 +58,7 @@ trade_data_2 <- trade_data %>%
          side1_player2 != side2_player3 | is.na(side1_player2) | is.na(side2_player3),
          side1_player3 != side2_player1 | is.na(side1_player3) | is.na(side2_player1),
          side1_player3 != side2_player2 | is.na(side1_player3) | is.na(side2_player2),
-         side1_player3 != side2_player3 | is.na(side1_player3) | is.na(side2_player3)
-         #grepl("Pick", side1_player1) == FALSE, grepl("Pick", side1_player2) == FALSE, grepl("Pick", side1_player3) == FALSE,
-         #grepl("Pick", side2_player1) == FALSE, grepl("Pick", side2_player2) == FALSE, grepl("Pick", side2_player3) == FALSE,
-         #grepl("Round", side1_player1) == FALSE, grepl("Round", side1_player2) == FALSE, grepl("Round", side1_player3) == FALSE,
-         #grepl("Round", side2_player1) == FALSE, grepl("Round", side2_player2) == FALSE, grepl("Round", side2_player3) == FALSE
-         ) %>%
+         side1_player3 != side2_player3 | is.na(side1_player3) | is.na(side2_player3)) %>%
   select(-c(side1_player1:side1_player3, side2_player1:side2_player3), c(side1_player1:side1_player3, side2_player1:side2_player3)) %>%
   filter(trade_date >= date_start)
 
@@ -63,7 +73,8 @@ player_data <- trade_data_2 %>%
 #Find the number of times each player was traded
 player_num_trades <- player_data %>%
   group_by(player_name) %>%
-  summarize(num_trades = n())
+  summarize(num_trades = n()) %>%
+  arrange(desc(num_trades))
 
 #Add the number of times each player was traded to the data
 player_data_2 <- player_data %>%
@@ -74,7 +85,10 @@ trades_min_player <- player_data_2 %>%
   group_by(trade_id) %>%
   summarize(min_player = min(num_trades))
 
-#Filter to trades where every player was traded at least 10 times
+#Get the minimimum number of trades to include in the optimization
+min_trades_for_init <- player_num_trades$num_trades[players_in_init_optimization]
+
+#Filter to trades where every player was traded at least the minimum number of times
 player_data_3 <- player_data_2 %>%
   left_join(trades_min_player, by = "trade_id") %>%
   filter(min_player >= min_trades_for_init)
@@ -115,69 +129,101 @@ point_df <- as.data.frame(sweep(X, MARGIN=2, value_vector, "*"))
 all_player_1 <- trade_data_2[rep(seq_len(nrow(trade_data_2)), 6), ] %>%
   mutate(data_num =  ceiling(row_number()/nrow(trade_data_2))) %>%
   select(data_num, everything()) %>%
-  mutate(new_side1_player1 = case_when(data_num == 1 ~ side1_player1,
+  mutate(s1_p1_player = case_when(data_num == 1 ~ side1_player1,
                                        data_num == 2 ~ side1_player2,
                                        data_num == 3 ~ side1_player3,
                                        data_num == 4 ~ side2_player1,
                                        data_num == 5 ~ side2_player2,
                                        data_num == 6 ~ side2_player3),
-         new_side1_player2 = case_when(data_num == 1 ~ side1_player2,
+         s1_p2_player = case_when(data_num == 1 ~ side1_player2,
                                        data_num == 2 ~ side1_player3,
                                        data_num == 3 ~ side1_player1,
                                        data_num == 4 ~ side2_player2,
                                        data_num == 5 ~ side2_player3,
                                        data_num == 6 ~ side2_player1),
-         new_side1_player3 = case_when(data_num == 1 ~ side1_player3,
+         s1_p3_player = case_when(data_num == 1 ~ side1_player3,
                                        data_num == 2 ~ side1_player1,
                                        data_num == 3 ~ side1_player2,
                                        data_num == 4 ~ side2_player3,
                                        data_num == 5 ~ side2_player1,
                                        data_num == 6 ~ side2_player2),
-         new_side2_player1 = case_when(data_num == 1 ~ side2_player1,
+         s2_p1_player = case_when(data_num == 1 ~ side2_player1,
                                        data_num == 2 ~ side2_player2,
                                        data_num == 3 ~ side2_player3,
                                        data_num == 4 ~ side1_player1,
                                        data_num == 5 ~ side1_player2,
                                        data_num == 6 ~ side1_player3),
-         new_side2_player2 = case_when(data_num == 1 ~ side2_player2,
+         s2_p2_player = case_when(data_num == 1 ~ side2_player2,
                                        data_num == 2 ~ side2_player3,
                                        data_num == 3 ~ side2_player1,
                                        data_num == 4 ~ side1_player2,
                                        data_num == 5 ~ side1_player3,
                                        data_num == 6 ~ side1_player1),
-         new_side2_player3 = case_when(data_num == 1 ~ side2_player3,
+         s2_p3_player = case_when(data_num == 1 ~ side2_player3,
                                        data_num == 2 ~ side2_player1,
                                        data_num == 3 ~ side2_player2,
                                        data_num == 4 ~ side1_player3,
                                        data_num == 5 ~ side1_player1,
                                        data_num == 6 ~ side1_player2)) %>%
-  filter(!is.na(new_side1_player1)) %>%
-  left_join(player_values, by = c("new_side1_player1" = "player_name")) %>%
-  rename(new_side1_player1_value = value) %>%
-  left_join(player_values, by = c("new_side1_player2" = "player_name")) %>%
-  rename(new_side1_player2_value = value) %>%
-  left_join(player_values, by = c("new_side1_player3" = "player_name")) %>%
-  rename(new_side1_player3_value = value) %>%
-  left_join(player_values, by = c("new_side2_player1" = "player_name")) %>%
-  rename(new_side2_player1_value = value) %>%
-  left_join(player_values, by = c("new_side2_player2" = "player_name")) %>%
-  rename(new_side2_player2_value = value) %>%
-  left_join(player_values, by = c("new_side2_player3" = "player_name")) %>%
-  rename(new_side2_player3_value = value) %>%
-  mutate_at(vars(new_side1_player1_value:new_side2_player3_value), ~replace(., is.na(.), 0)) %>%
-  mutate(implied_value = new_side2_player1_value + new_side2_player2_value + new_side2_player3_value - new_side1_player2_value - new_side1_player3_value,
+  filter(!is.na(s1_p1_player)) %>%
+  left_join(player_values, by = c("s1_p1_player" = "player_name")) %>%
+  rename(s1_p1_player_value = value) %>%
+  left_join(player_values, by = c("s1_p2_player" = "player_name")) %>%
+  rename(s1_p2_player_value = value) %>%
+  left_join(player_values, by = c("s1_p3_player" = "player_name")) %>%
+  rename(s1_p3_player_value = value) %>%
+  left_join(player_values, by = c("s2_p1_player" = "player_name")) %>%
+  rename(s2_p1_player_value = value) %>%
+  left_join(player_values, by = c("s2_p2_player" = "player_name")) %>%
+  rename(s2_p2_player_value = value) %>%
+  left_join(player_values, by = c("s2_p3_player" = "player_name")) %>%
+  rename(s2_p3_player_value = value) %>%
+  mutate_at(vars(s1_p1_player_value:s2_p3_player_value), ~replace(., is.na(.), 0)) %>%
+  mutate(implied_value = s2_p1_player_value + s2_p2_player_value + s2_p3_player_value - s1_p2_player_value - s1_p3_player_value,
          color_val = case_when(
-           !is.na(new_side1_player2) ~ "red",
-           !is.na(new_side2_player2) ~ "blue",
+           !is.na(s1_p2_player) ~ "red",
+           !is.na(s2_p2_player) ~ "blue",
            TRUE ~ "gray"
          ),
          fill_val = case_when(
-          !is.na(new_side1_player2) & !is.na(new_side1_player3) ~ "Traded with 2 other players",
-          !is.na(new_side2_player2) & !is.na(new_side2_player3) ~ "Traded for 3 players",
-          !is.na(new_side1_player2) | !is.na(new_side1_player3) ~ "Traded with 1 other player",
-          !is.na(new_side2_player2) | !is.na(new_side2_player3) ~ "Traded for 2 players",
+          !is.na(s1_p2_player) & !is.na(s1_p3_player) ~ "Traded with 2 other players",
+          !is.na(s2_p2_player) & !is.na(s2_p3_player) ~ "Traded for 3 players",
+          !is.na(s1_p2_player) | !is.na(s1_p3_player) ~ "Traded with 1 other player",
+          !is.na(s2_p2_player) | !is.na(s2_p3_player) ~ "Traded for 2 players",
           TRUE ~ "Traded for 1 player"
-         ))
+         )) %>%
+  left_join(player_details, by = c("s1_p1_player" = "Player")) %>%
+  mutate(s1_p1_position = case_when(!is.na(Position) ~ Position,
+                                 grepl("Round", s1_p1_player) ~ "Pick")) %>%
+  select(-Position) %>%
+  left_join(player_details, by = c("s1_p2_player" = "Player")) %>%
+  mutate(s1_p2_position = case_when(!is.na(Position) ~ Position,
+                                 grepl("Round", s1_p2_player) ~ "Pick")) %>%
+  select(-Position) %>%
+  left_join(player_details, by = c("s1_p3_player" = "Player")) %>%
+  mutate(s1_p3_position = case_when(!is.na(Position) ~ Position,
+                                 grepl("Round", s1_p3_player) ~ "Pick")) %>%
+  select(-Position) %>%
+  left_join(player_details, by = c("s2_p1_player" = "Player")) %>%
+  mutate(s2_p1_position = case_when(!is.na(Position) ~ Position,
+                                 grepl("Round", s2_p1_player) ~ "Pick")) %>%
+  select(-Position) %>%
+  left_join(player_details, by = c("s2_p2_player" = "Player")) %>%
+  mutate(s2_p2_position = case_when(!is.na(Position) ~ Position,
+                                 grepl("Round", s2_p2_player) ~ "Pick")) %>%
+  select(-Position) %>%
+  left_join(player_details, by = c("s2_p3_player" = "Player")) %>%
+  mutate(s2_p3_position = case_when(!is.na(Position) ~ Position,
+                                 grepl("Round", s2_p3_player) ~ "Pick")) %>%
+  select(-Position) %>%
+  filter(is.na(s1_p1_player) | !is.na(s1_p1_position),
+         is.na(s1_p2_player) | !is.na(s1_p2_position),
+         is.na(s1_p3_player) | !is.na(s1_p3_position),
+         is.na(s2_p1_player) | !is.na(s2_p1_position),
+         is.na(s2_p2_player) | !is.na(s2_p2_position),
+         is.na(s2_p3_player) | !is.na(s2_p3_position)) %>%
+  select(-c(data_num:league_settings.site), -c(league_settings.keepers:league_settings._id),
+         -c(side1_no_brackets:side2_no_brackets), -c(side1_player1:side2_player3))
 
 time_constant <- 10
 
@@ -188,7 +234,7 @@ date_list <- data.frame(date_val = seq(date_start, date_end, by="days"))
 find_player_values <- function(date_1, trade_df) {
 
 players_by_date_1 <- trade_df %>%
-  group_by(trade_date, player_name = new_side1_player1) %>%
+  group_by(trade_date, player_name = s1_p1_player) %>%
   summarize(average_value = mean(implied_value), trade_count = n()) %>%
   mutate(days_since_trade = as.numeric(difftime(date_1, trade_date, units = c("days")))) %>%
   filter(days_since_trade >= 0)
@@ -245,12 +291,12 @@ return(all_player_values)
 
 #Model run 1: run with only trades where there was only one player on the left side
 all_player_no_trade_up <- all_player_1 %>%
-      filter(is.na(new_side1_player2) | !is.na(new_side1_player2_value),
-             is.na(new_side1_player3) | !is.na(new_side1_player3_value),
-             is.na(new_side2_player1) | !is.na(new_side2_player1_value),
-             is.na(new_side2_player2) | !is.na(new_side2_player2_value),
-             is.na(new_side2_player3) | !is.na(new_side2_player3_value)) %>%
-  filter(is.na(new_side1_player2), is.na(new_side1_player3))
+      filter(is.na(s1_p2_player) | !is.na(s1_p2_player_value),
+             is.na(s1_p3_player) | !is.na(s1_p3_player_value),
+             is.na(s2_p1_player) | !is.na(s2_p1_player_value),
+             is.na(s2_p2_player) | !is.na(s2_p2_player_value),
+             is.na(s2_p3_player) | !is.na(s2_p3_player_value)) %>%
+  filter(is.na(s1_p2_player), is.na(s1_p3_player))
 
 player_values_by_date_1 <- apply(date_list, 1, find_player_values, trade_df = all_player_no_trade_up)
 player_values_df_1_no_min <- do.call(rbind.data.frame, player_values_by_date_1)
@@ -258,24 +304,24 @@ player_values_df_1 <- replace_mins(player_values_df_1_no_min)
 
 #Model run 2: Run with all trades
 all_player_2 <- all_player_1 %>%
-  left_join(player_values_df_1, by = c("new_side1_player1" = "player_name", "trade_date")) %>%
+  left_join(player_values_df_1, by = c("s1_p1_player" = "player_name", "trade_date")) %>%
   rename(s1_p1_value = player_value) %>%
-  left_join(player_values_df_1, by = c("new_side1_player2" = "player_name", "trade_date")) %>%
+  left_join(player_values_df_1, by = c("s1_p2_player" = "player_name", "trade_date")) %>%
   rename(s1_p2_value = player_value) %>%
-  left_join(player_values_df_1, by = c("new_side1_player3" = "player_name", "trade_date")) %>%
+  left_join(player_values_df_1, by = c("s1_p3_player" = "player_name", "trade_date")) %>%
   rename(s1_p3_value = player_value) %>%
-  left_join(player_values_df_1, by = c("new_side2_player1" = "player_name", "trade_date")) %>%
+  left_join(player_values_df_1, by = c("s2_p1_player" = "player_name", "trade_date")) %>%
   rename(s2_p1_value = player_value) %>%
-  left_join(player_values_df_1, by = c("new_side2_player2" = "player_name", "trade_date")) %>%
+  left_join(player_values_df_1, by = c("s2_p2_player" = "player_name", "trade_date")) %>%
   rename(s2_p2_value = player_value) %>%
-  left_join(player_values_df_1, by = c("new_side2_player3" = "player_name", "trade_date")) %>%
+  left_join(player_values_df_1, by = c("s2_p3_player" = "player_name", "trade_date")) %>%
   rename(s2_p3_value = player_value) %>%
   filter(!is.na(s1_p1_value)) %>%
-  filter(is.na(new_side1_player2) | !is.na(s1_p2_value),
-         is.na(new_side1_player3) | !is.na(s1_p3_value),
-         is.na(new_side2_player1) | !is.na(s2_p1_value),
-         is.na(new_side2_player2) | !is.na(s2_p2_value),
-         is.na(new_side2_player3) | !is.na(s2_p3_value)) %>%
+  filter(is.na(s1_p2_player) | !is.na(s1_p2_value),
+         is.na(s1_p3_player) | !is.na(s1_p3_value),
+         is.na(s2_p1_player) | !is.na(s2_p1_value),
+         is.na(s2_p2_player) | !is.na(s2_p2_value),
+         is.na(s2_p3_player) | !is.na(s2_p3_value)) %>%
   mutate_at(vars(s1_p1_value:s2_p3_value), ~replace(., is.na(.), 0)) %>%
   mutate(implied_value = s1_p1_value / (s1_p1_value + s1_p2_value + s1_p3_value) * (s2_p1_value + s2_p2_value + s2_p3_value))
 
@@ -288,47 +334,47 @@ for (i in 1:10) {
 
 all_player_2 <- all_player_2 %>%
   select(-implied_value, -c(s1_p1_value:s2_p3_value)) %>%
-  left_join(player_values_df_2, by = c("new_side1_player1" = "player_name", "trade_date")) %>%
+  left_join(player_values_df_2, by = c("s1_p1_player" = "player_name", "trade_date")) %>%
   rename(s1_p1_value = player_value) %>%
-  left_join(player_values_df_2, by = c("new_side1_player2" = "player_name", "trade_date")) %>%
+  left_join(player_values_df_2, by = c("s1_p2_player" = "player_name", "trade_date")) %>%
   rename(s1_p2_value = player_value) %>%
-  left_join(player_values_df_2, by = c("new_side1_player3" = "player_name", "trade_date")) %>%
+  left_join(player_values_df_2, by = c("s1_p3_player" = "player_name", "trade_date")) %>%
   rename(s1_p3_value = player_value) %>%
-  left_join(player_values_df_2, by = c("new_side2_player1" = "player_name", "trade_date")) %>%
+  left_join(player_values_df_2, by = c("s2_p1_player" = "player_name", "trade_date")) %>%
   rename(s2_p1_value = player_value) %>%
-  left_join(player_values_df_2, by = c("new_side2_player2" = "player_name", "trade_date")) %>%
+  left_join(player_values_df_2, by = c("s2_p2_player" = "player_name", "trade_date")) %>%
   rename(s2_p2_value = player_value) %>%
-  left_join(player_values_df_2, by = c("new_side2_player3" = "player_name", "trade_date")) %>%
+  left_join(player_values_df_2, by = c("s2_p3_player" = "player_name", "trade_date")) %>%
   rename(s2_p3_value = player_value) %>%
   filter(!is.na(s1_p1_value)) %>%
-    filter(is.na(new_side1_player2) | !is.na(s1_p2_value),
-           is.na(new_side1_player3) | !is.na(s1_p3_value),
-           is.na(new_side2_player1) | !is.na(s2_p1_value),
-           is.na(new_side2_player2) | !is.na(s2_p2_value),
-           is.na(new_side2_player3) | !is.na(s2_p3_value)) %>%
+    filter(is.na(s1_p2_player) | !is.na(s1_p2_value),
+           is.na(s1_p3_player) | !is.na(s1_p3_value),
+           is.na(s2_p1_player) | !is.na(s2_p1_value),
+           is.na(s2_p2_player) | !is.na(s2_p2_value),
+           is.na(s2_p3_player) | !is.na(s2_p3_value)) %>%
   mutate_at(vars(s1_p1_value:s2_p3_value), ~replace(., is.na(.), 0)) %>%
   mutate(implied_value = s1_p1_value / (s1_p1_value + s1_p2_value + s1_p3_value) * (s2_p1_value + s2_p2_value + s2_p3_value))
-
-new_side1_players <- all_player_2 %>%
-select(new_side1_player1:new_side1_player3) %>%
-apply(1, function(x) toString(na.omit(x)))
-
-new_side2_players <- all_player_2 %>%
-select(new_side2_player1:new_side2_player3) %>%
-apply(1, function(x) toString(na.omit(x)))
-
-all_player_2 <- bind_cols(all_player_2, new_side1_players = new_side1_players, new_side2_players = new_side2_players)
 
 player_values_by_date_2 <- apply(date_list, 1, find_player_values, trade_df = all_player_2)
 player_values_df_2_no_min <- do.call(rbind.data.frame, player_values_by_date_2)
 player_values_df_2 <- replace_mins(player_values_df_2_no_min)
 }
 
+s1_players <- all_player_2 %>%
+select(s1_p1_player:s1_p3_player) %>%
+apply(1, function(x) toString(na.omit(x)))
+
+s2_players <- all_player_2 %>%
+select(s2_p1_player:s2_p3_player) %>%
+apply(1, function(x) toString(na.omit(x)))
+
+all_player_2 <- bind_cols(all_player_2, s1_players = s1_players, s2_players = s2_players)
+
 right = function(text, num_char) {
   substr(text, nchar(text) - (num_char-1), nchar(text))
 }
 
-player_to_graph <- "Saquon Barkley"
+player_to_graph <- "Patrick Mahomes"
 
 player_line <- player_values_df_2 %>%
   filter(player_name == player_to_graph)
@@ -341,7 +387,7 @@ last_player_value <- last_player_value_tbl$player_value
 output_trades <- all_player_2 %>%
   mutate(fill_val = factor(fill_val, levels = c("Traded for 3 players", "Traded for 2 players", "Traded for 1 player",
                                                 "Traded with 1 other player", "Traded with 2 other players")), player_value = implied_value) %>%
-  select(player_name = new_side1_player1, trade_date, player_value, color_val, fill_val, new_side1_players, new_side2_players)  %>%
+  select(player_name = s1_p1_player, trade_date, player_value, color_val, fill_val, s1_players, s2_players)  %>%
   filter(!(grepl("2019", player_name) | grepl("2020", player_name)))
 
 output_values <- player_values_df_2 %>%
@@ -400,12 +446,211 @@ g + annotate("label",x = date_end, y = last_player_value + 4 * g_breaks_adj,labe
 final_player_values <- player_values_df_2 %>%
   filter(trade_date == date_end)
 
-#Add trade id's as labels, for the back-end
-#Josh could use the trade id's to bring up the trade below the graph, if a circle is hovered over
-#Average 2 for 1 markup
-#Send Josh the raw data
+rm(X, objective, problem, result, player_values_by_date_1, player_values_by_date_2)
+
+#Find the adjustments to apply to different league settings
+rel_data <- all_player_2 %>%
+  select(num_teams, num_qbs, ppr_type, s1_p1_value, s1_p1_position, implied_value) %>%
+  rename(player_value = s1_p1_value, position = s1_p1_position) %>%
+  mutate(trade_miss = implied_value / player_value - 1)
+
+qb_model <- lm(trade_miss ~ num_teams + num_qbs + ppr_type, data = filter(rel_data, position == "QB"))
+rb_model <- lm(trade_miss ~ num_teams + num_qbs + ppr_type, data = filter(rel_data, position == "RB"))
+wr_model <- lm(trade_miss ~ num_teams + num_qbs + ppr_type, data = filter(rel_data, position == "WR"))
+te_model <- lm(trade_miss ~ num_teams + num_qbs + ppr_type, data = filter(rel_data, position == "TE"))
+pick_model <- lm(trade_miss ~ num_teams + num_qbs + ppr_type, data = filter(rel_data, position == "Pick"))
+
+d_num_teams <- distinct(select(all_player_2, num_teams))
+d_num_qbs <- distinct(select(all_player_2, num_qbs))
+d_ppr_type <- distinct(select(all_player_2, ppr_type))
+
+league_settings <- merge(merge(d_num_teams, d_num_qbs), d_ppr_type)
+
+all_settings <- data.frame(league_settings,
+                                   QB_adj = 1 + predict(qb_model, league_settings),
+                                   RB_adj = 1 + predict(rb_model, league_settings),
+                                   WR_adj = 1 + predict(wr_model, league_settings),
+                                   TE_adj = 1 + predict(te_model, league_settings),
+                                   Pick_adj = 1 + predict(pick_model, league_settings))
+
+most_common_settings <- all_settings %>%
+  filter(num_teams == 12, num_qbs == 1, ppr_type == 1)
+
+all_settings_data <- all_settings %>%
+  select(-c(1:3))
+
+most_common_settings_data <- most_common_settings %>%
+  select(-c(1:3))
+
+normalized_adjustments <- data.frame(mapply('/', all_settings_data, most_common_settings_data))
+
+settings_adjustments_wide <- bind_cols(league_settings, normalized_adjustments) %>%
+  arrange(desc(QB_adj))
+
+settings_adjustments <- settings_adjustments_wide %>%
+  pivot_longer(QB_adj:Pick_adj, names_to = "position", values_to = "adjustment") %>%
+  mutate(position = gsub("_adj", "", position))
+
+adj_player_1 <- all_player_2 %>%
+  left_join(settings_adjustments, by = c("s1_p1_position" = "position", "num_teams", "num_qbs", "ppr_type")) %>%
+  rename(s1_p1_adj = adjustment) %>%
+  left_join(settings_adjustments, by = c("s1_p2_position" = "position", "num_teams", "num_qbs", "ppr_type")) %>%
+  rename(s1_p2_adj = adjustment) %>%
+  left_join(settings_adjustments, by = c("s1_p3_position" = "position", "num_teams", "num_qbs", "ppr_type")) %>%
+  rename(s1_p3_adj = adjustment) %>%
+  left_join(settings_adjustments, by = c("s2_p1_position" = "position", "num_teams", "num_qbs", "ppr_type")) %>%
+  rename(s2_p1_adj = adjustment) %>%
+  left_join(settings_adjustments, by = c("s2_p2_position" = "position", "num_teams", "num_qbs", "ppr_type")) %>%
+  rename(s2_p2_adj = adjustment) %>%
+  left_join(settings_adjustments, by = c("s2_p3_position" = "position", "num_teams", "num_qbs", "ppr_type")) %>%
+  rename(s2_p3_adj = adjustment) %>%
+  mutate(s1_p1_value_adj = s1_p1_value * s1_p1_adj,
+         s1_p2_value_adj = s1_p2_value * s1_p2_adj,
+         s1_p3_value_adj = s1_p3_value * s1_p3_adj,
+         s2_p1_value_adj = s2_p1_value * s2_p1_adj,
+         s2_p2_value_adj = s2_p2_value * s2_p2_adj,
+         s2_p3_value_adj = s2_p3_value * s2_p3_adj) %>%
+         mutate_at(vars(s1_p1_value_adj:s2_p3_value_adj), ~replace(., is.na(.), 0)) %>%
+         mutate(implied_value = (s1_p1_value_adj / (s1_p1_value_adj + s1_p2_value_adj + s1_p3_value_adj) *
+                          (s2_p1_value_adj + s2_p2_value_adj + s2_p3_value_adj)) / s1_p1_adj)
+
+
+#Run the model on the adjusted trades
+adj_player_values_by_date <- apply(date_list, 1, find_player_values, trade_df = adj_player_1)
+adj_player_values_df_no_min <- do.call(rbind.data.frame, adj_player_values_by_date)
+adj_player_values_df <- replace_mins(adj_player_values_df_no_min)
+
+#Run the model 10 more times to reach an equilibrium
+for (i in 1:10) {
+
+adj_player_2 <- adj_player_1 %>%
+  select(-implied_value, -c(s1_p1_value:s2_p3_value)) %>%
+  left_join(player_values_df_2, by = c("s1_p1_player" = "player_name", "trade_date")) %>%
+  rename(s1_p1_value = player_value) %>%
+  left_join(player_values_df_2, by = c("s1_p2_player" = "player_name", "trade_date")) %>%
+  rename(s1_p2_value = player_value) %>%
+  left_join(player_values_df_2, by = c("s1_p3_player" = "player_name", "trade_date")) %>%
+  rename(s1_p3_value = player_value) %>%
+  left_join(player_values_df_2, by = c("s2_p1_player" = "player_name", "trade_date")) %>%
+  rename(s2_p1_value = player_value) %>%
+  left_join(player_values_df_2, by = c("s2_p2_player" = "player_name", "trade_date")) %>%
+  rename(s2_p2_value = player_value) %>%
+  left_join(player_values_df_2, by = c("s2_p3_player" = "player_name", "trade_date")) %>%
+  rename(s2_p3_value = player_value) %>%
+  filter(!is.na(s1_p1_value)) %>%
+    filter(is.na(s1_p2_player) | !is.na(s1_p2_value),
+           is.na(s1_p3_player) | !is.na(s1_p3_value),
+           is.na(s2_p1_player) | !is.na(s2_p1_value),
+           is.na(s2_p2_player) | !is.na(s2_p2_value),
+           is.na(s2_p3_player) | !is.na(s2_p3_value)) %>%
+  mutate_at(vars(s1_p1_value:s2_p3_value), ~replace(., is.na(.), 0)) %>%
+   mutate(s1_p1_value_adj = s1_p1_value * s1_p1_adj,
+         s1_p2_value_adj = s1_p2_value * s1_p2_adj,
+         s1_p3_value_adj = s1_p3_value * s1_p3_adj,
+         s2_p1_value_adj = s2_p1_value * s2_p1_adj,
+         s2_p2_value_adj = s2_p2_value * s2_p2_adj,
+         s2_p3_value_adj = s2_p3_value * s2_p3_adj) %>%
+         mutate_at(vars(s1_p1_value_adj:s2_p3_value_adj), ~replace(., is.na(.), 0)) %>%
+         mutate(implied_value = (s1_p1_value_adj / (s1_p1_value_adj + s1_p2_value_adj + s1_p3_value_adj) *
+                          (s2_p1_value_adj + s2_p2_value_adj + s2_p3_value_adj)) / s1_p1_adj)
+
+adj_player_values_by_date <- apply(date_list, 1, find_player_values, trade_df = adj_player_2)
+adj_player_values_df_no_min <- do.call(rbind.data.frame, adj_player_values_by_date)
+adj_player_values_df <- replace_mins(adj_player_values_df_no_min)
+
+}
+
+#Create the output for the adjusted data
+player_to_graph <- "Christian McCaffrey"
+
+player_line <- adj_player_values_df %>%
+  filter(player_name == player_to_graph)
+
+last_player_value_tbl <- player_line %>%
+  filter(trade_date == date_end)
+
+last_player_value <- last_player_value_tbl$player_value
+
+output_trades <- adj_player_2 %>%
+  mutate(fill_val = factor(fill_val, levels = c("Traded for 3 players", "Traded for 2 players", "Traded for 1 player",
+                                                "Traded with 1 other player", "Traded with 2 other players")), player_value = implied_value) %>%
+  select(player_name = s1_p1_player, trade_date, player_value, color_val, fill_val, s1_players, s2_players)  %>%
+  filter(!(grepl("2019", player_name) | grepl("2020", player_name)))
+
+output_values <- adj_player_values_df %>%
+  filter(!(grepl("2019", player_name) | grepl("2020", player_name)))
+
+date_end_minus_14 <- date_end - 14
+
+end_values <- output_values %>%
+  filter(trade_date == date_end)
+
+end_minus_14_values <- output_values %>%
+  filter(trade_date == date_end_minus_14) %>%
+  rename(player_value_minus_14 = player_value) %>%
+  select(-trade_date)
+
+output_last_values <- end_values %>%
+  left_join(end_minus_14_values, by = "player_name") %>%
+  mutate(change_last_14 = player_value - player_value_minus_14) %>%
+  select(-player_value_minus_14) %>%
+  arrange(desc(player_value)) %>%
+  left_join(player_details, by = c(player_name = "Player")) %>%
+  rename(position = Position) %>%
+  mutate(ranking = 1:n())
+
+one_player <- output_trades %>%
+  filter(player_name == player_to_graph)
+
+g <- ggplot(data = one_player, aes(x = trade_date, y = player_value)) +
+  geom_point(aes(color = color_val, fill = fill_val), size = 4, shape = 21, alpha = 0.8) +
+  geom_line(data = player_line, lwd = 2, alpha = 0.4) +
+  theme_fivethirtyeight() + 
+  scale_color_manual(values = c("blue" = "blue", "gray" = "darkgray", "red" = "red"), guide = FALSE) +
+  scale_fill_manual(values = c("Traded for 3 players" = "darkblue", "Traded with 2 other players" = "red3", "Traded for 2 players" = "lightblue",
+                               "Traded for 1 player" = "gray", "Traded with 1 other player" = "indianred1")) +
+  theme(legend.position = "bottom",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 16),
+        title = element_text(size = 26),
+        axis.text = element_text(size = 16),
+        axis.title = element_text(),
+        axis.title.x = element_text(size = 24, vjust = -1),
+        axis.title.y = element_text(size = 24, vjust = 2),
+        panel.background = element_rect(fill = "white")) +
+  labs(title = paste(player_to_graph, "'", ifelse(right(player_to_graph, 1) != "s","s",""), " value over time in the 2020 season", sep = ""),
+       x = "Trade date",
+       y = "Value") +
+  geom_vline(xintercept = date_end, color = "black", linetype = 3, lwd = 1) +
+  
+  xlim(date_start, date_end + 3)
+
+g_breaks_adj <- (ggplot_build(g)$layout$panel_params[[1]]$y.range[2] - ggplot_build(g)$layout$panel_params[[1]]$y.range[1]) / 28.7
+
+g + annotate("label",x = date_end, y = last_player_value + 4 * g_breaks_adj,label = paste(sub(" 0", " ", format(date_end, "%B %d")), " Value", sep = ""),
+           vjust = 1, size = 8, color = "black", fill = "white", fontface="bold", label.size = 0) +
+  geom_label(data = last_player_value_tbl, aes(x = date_end, y = last_player_value + 2.5 * g_breaks_adj,label = paste(round(last_player_value, 1), sep = "")),
+           vjust = 1, size = 8, color = "black", fill = "lightsteelblue1", label.padding = unit(0.4, "cm"))
 
 current_date <- as.Date(now())
-write_xlsx(output_trades, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Trade Data ", current_date, ".xlsx", sep = ""))
-write_xlsx(output_values, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Player Values ", current_date, ".xlsx", sep = ""))
-write_xlsx(output_last_values, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Last Values ", current_date, ".xlsx", sep = ""))
+
+if (export_data == "Yes") {
+  write_xlsx(output_trades, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Trade Data ", current_date, ".xlsx", sep = ""))
+  write_xlsx(output_values, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Player Values ", current_date, ".xlsx", sep = ""))
+  write_xlsx(output_last_values, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Last Values ", current_date, ".xlsx", sep = ""))
+  write_xlsx(settings_adjustments, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Settings_Adjustments ", current_date, ".xlsx", sep = ""))
+}
+
+#Fix this next time!!!!
+all_rankings <- merge(output_last_values, settings_adjustments_wide) %>%
+  mutate(adjustment = case_when(position == "QB" ~ QB_adj,
+                                position == "RB" ~ RB_adj,
+                                position == "WR" ~ WR_adj,
+                                position == "TE" ~ TE_adj,
+                                position == "Pick" ~ Pick_adj),
+         new_player_value = player_value * adjustment,
+         new_change_last_14 = change_last_14 * adjustment)
+
+all_rankings_all <- all_rankings %>%
+  select(player_name, trade_date, position, num_teams:ppr_type, player_value = new_player_value, change_last_14 = new_change_last_14)
+#Add ranks
