@@ -9,15 +9,12 @@ library(lubridate)
 library(writexl)
 library(readxl)
 
-trade_data <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/Trade Data/tradedata-10-6-2020.csv")
-
-player_details <- read_excel("C:/Users/alexc/Desktop/Fantasy Football/Data/Player Details.xlsx") %>%
-  filter(Position %in% c("QB", "RB", "WR", "TE")) %>%
-  select(Player, Position)
+trade_data <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/Trade Data/tradedata-10-13-2020.csv")
+fantasypros <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/Data/FantasyPros_2020_Dynasty_ALL_Rankings.csv")
 
 date_start <- as.Date("2020-07-01")
 players_in_init_optimization <- 200
-min_trades_for_val <- 8
+min_trades_for_val <- 5
 average_player_value <- 20
 export_data <- "Yes"
 
@@ -29,6 +26,20 @@ remove_brackets <- function (x) {
   x <- gsub("]","",x, fixed = TRUE)
   x <- gsub('\"', "", x, fixed = TRUE)
 }
+
+remove_suffixes <- function (x) {
+  x <- gsub(" Fuller V", "Fuller", x)
+  x <- gsub(" IV", "", x)
+  x <- gsub(" III", "", x)
+  x <- gsub(" II", "", x)
+  x <- gsub(" Jr.", "", x)
+  x <- gsub("\\.", "", x)
+}
+
+player_details <- read_excel("C:/Users/alexc/Desktop/Fantasy Football/Data/Player Details.xlsx") %>%
+  filter(Position %in% c("QB", "RB", "WR", "TE")) %>%
+  select(Player, Position) %>%
+  mutate(Player = remove_suffixes(Player))
 
 #Add fields to the data so that it is easier to use
 trade_data_2 <- trade_data %>%
@@ -60,7 +71,13 @@ trade_data_2 <- trade_data %>%
          side1_player3 != side2_player2 | is.na(side1_player3) | is.na(side2_player2),
          side1_player3 != side2_player3 | is.na(side1_player3) | is.na(side2_player3)) %>%
   select(-c(side1_player1:side1_player3, side2_player1:side2_player3), c(side1_player1:side1_player3, side2_player1:side2_player3)) %>%
-  filter(trade_date >= date_start)
+  filter(trade_date >= date_start) %>%
+  mutate(side1_player1 = remove_suffixes(side1_player1),
+         side1_player2 = remove_suffixes(side1_player2),
+         side1_player3 = remove_suffixes(side1_player3),
+         side2_player1 = remove_suffixes(side2_player1),
+         side2_player2 = remove_suffixes(side2_player2),
+         side2_player3 = remove_suffixes(side2_player3))
 
 #Organize the data by player
 player_data <- trade_data_2 %>%
@@ -223,7 +240,11 @@ all_player_1 <- trade_data_2[rep(seq_len(nrow(trade_data_2)), 6), ] %>%
          is.na(s2_p2_player) | !is.na(s2_p2_position),
          is.na(s2_p3_player) | !is.na(s2_p3_position)) %>%
   select(-c(data_num:league_settings.site), -c(league_settings.keepers:league_settings._id),
-         -c(side1_no_brackets:side2_no_brackets), -c(side1_player1:side2_player3))
+         -c(side1_no_brackets:side2_no_brackets), -c(side1_player1:side2_player3)) %>%
+  mutate(qb_trade_na = ifelse((s1_p1_position == "QB" | s1_p2_position == "QB" | s1_p3_position == "QB" |
+           s2_p1_position == "QB" | s2_p2_position == "QB" | s2_p3_position == "QB"), "Yes", "No"),
+         qb_trade = ifelse(is.na(qb_trade_na), "No", "Yes")) %>%
+  filter(!(num_qbs == 2 & qb_trade == "Yes"))
 
 time_constant <- 10
 
@@ -454,17 +475,16 @@ rel_data <- all_player_2 %>%
   rename(player_value = s1_p1_value, position = s1_p1_position) %>%
   mutate(trade_miss = implied_value / player_value - 1)
 
-qb_model <- lm(trade_miss ~ num_teams + num_qbs + ppr_type, data = filter(rel_data, position == "QB"))
-rb_model <- lm(trade_miss ~ num_teams + num_qbs + ppr_type, data = filter(rel_data, position == "RB"))
-wr_model <- lm(trade_miss ~ num_teams + num_qbs + ppr_type, data = filter(rel_data, position == "WR"))
-te_model <- lm(trade_miss ~ num_teams + num_qbs + ppr_type, data = filter(rel_data, position == "TE"))
-pick_model <- lm(trade_miss ~ num_teams + num_qbs + ppr_type, data = filter(rel_data, position == "Pick"))
+qb_model <- lm(trade_miss ~ num_teams + ppr_type, data = filter(rel_data, position == "QB"))
+rb_model <- lm(trade_miss ~ num_teams + ppr_type, data = filter(rel_data, position == "RB"))
+wr_model <- lm(trade_miss ~ num_teams + ppr_type, data = filter(rel_data, position == "WR"))
+te_model <- lm(trade_miss ~ num_teams + ppr_type, data = filter(rel_data, position == "TE"))
+pick_model <- lm(trade_miss ~ num_teams + ppr_type, data = filter(rel_data, position == "Pick"))
 
 d_num_teams <- distinct(select(all_player_2, num_teams))
-d_num_qbs <- distinct(select(all_player_2, num_qbs))
 d_ppr_type <- distinct(select(all_player_2, ppr_type))
 
-league_settings <- merge(merge(d_num_teams, d_num_qbs), d_ppr_type)
+league_settings <- merge(d_num_teams, d_ppr_type)
 
 all_settings <- data.frame(league_settings,
                                    QB_adj = 1 + predict(qb_model, league_settings),
@@ -474,13 +494,13 @@ all_settings <- data.frame(league_settings,
                                    Pick_adj = 1 + predict(pick_model, league_settings))
 
 most_common_settings <- all_settings %>%
-  filter(num_teams == 12, num_qbs == 1, ppr_type == 1)
+  filter(num_teams == 12, ppr_type == 1)
 
 all_settings_data <- all_settings %>%
-  select(-c(1:3))
+  select(-c(1:2))
 
 most_common_settings_data <- most_common_settings %>%
-  select(-c(1:3))
+  select(-c(1:2))
 
 normalized_adjustments <- data.frame(mapply('/', all_settings_data, most_common_settings_data))
 
@@ -492,17 +512,17 @@ settings_adjustments <- settings_adjustments_wide %>%
   mutate(position = gsub("_adj", "", position))
 
 adj_player_1 <- all_player_2 %>%
-  left_join(settings_adjustments, by = c("s1_p1_position" = "position", "num_teams", "num_qbs", "ppr_type")) %>%
+  left_join(settings_adjustments, by = c("s1_p1_position" = "position", "num_teams", "ppr_type")) %>%
   rename(s1_p1_adj = adjustment) %>%
-  left_join(settings_adjustments, by = c("s1_p2_position" = "position", "num_teams", "num_qbs", "ppr_type")) %>%
+  left_join(settings_adjustments, by = c("s1_p2_position" = "position", "num_teams", "ppr_type")) %>%
   rename(s1_p2_adj = adjustment) %>%
-  left_join(settings_adjustments, by = c("s1_p3_position" = "position", "num_teams", "num_qbs", "ppr_type")) %>%
+  left_join(settings_adjustments, by = c("s1_p3_position" = "position", "num_teams", "ppr_type")) %>%
   rename(s1_p3_adj = adjustment) %>%
-  left_join(settings_adjustments, by = c("s2_p1_position" = "position", "num_teams", "num_qbs", "ppr_type")) %>%
+  left_join(settings_adjustments, by = c("s2_p1_position" = "position", "num_teams", "ppr_type")) %>%
   rename(s2_p1_adj = adjustment) %>%
-  left_join(settings_adjustments, by = c("s2_p2_position" = "position", "num_teams", "num_qbs", "ppr_type")) %>%
+  left_join(settings_adjustments, by = c("s2_p2_position" = "position", "num_teams", "ppr_type")) %>%
   rename(s2_p2_adj = adjustment) %>%
-  left_join(settings_adjustments, by = c("s2_p3_position" = "position", "num_teams", "num_qbs", "ppr_type")) %>%
+  left_join(settings_adjustments, by = c("s2_p3_position" = "position", "num_teams", "ppr_type")) %>%
   rename(s2_p3_adj = adjustment) %>%
   mutate(s1_p1_value_adj = s1_p1_value * s1_p1_adj,
          s1_p2_value_adj = s1_p2_value * s1_p2_adj,
@@ -596,8 +616,9 @@ output_last_values <- end_values %>%
   select(-player_value_minus_14) %>%
   arrange(desc(player_value)) %>%
   left_join(player_details, by = c(player_name = "Player")) %>%
-  rename(position = Position) %>%
-  mutate(ranking = 1:n())
+  mutate(position = case_when(!is.na(Position) ~ Position,
+                                 grepl("Round", player_name) ~ "Pick"),
+  ranking = 1:n())
 
 one_player <- output_trades %>%
   filter(player_name == player_to_graph)
@@ -632,13 +653,62 @@ g + annotate("label",x = date_end, y = last_player_value + 4 * g_breaks_adj,labe
   geom_label(data = last_player_value_tbl, aes(x = date_end, y = last_player_value + 2.5 * g_breaks_adj,label = paste(round(last_player_value, 1), sep = "")),
            vjust = 1, size = 8, color = "black", fill = "lightsteelblue1", label.padding = unit(0.4, "cm"))
 
+#Compare the rankings to FantasyPros
+fantasypros_2 <- fantasypros %>%
+  mutate(player_name = remove_suffixes(str_sub((str_match(PLAYER.NAME, ".+?(?<=\\()")), end = -3))) %>%
+  inner_join(output_last_values, by = "player_name") %>%
+  select(player_name) %>%
+  mutate(fp_ranking = 1:n())
+
+rankings_combined <- output_last_values %>%
+  left_join(fantasypros_2, by = "player_name") %>%
+  mutate(trade_ranking = ranking)
+
+values_by_rank <- rankings_combined %>%
+  filter(!is.na(fp_ranking)) %>%
+  mutate(ranking = 1:n()) %>%
+  select(ranking, fp_value = player_value)
+
+rankings_comparison <- rankings_combined %>%
+  left_join(values_by_rank, by = c("fp_ranking" = "ranking")) %>%
+  select(player_name, position, trade_value = player_value, change_last_14, fp_value, trade_ranking, fp_ranking) %>%
+  mutate(value_score = fp_value - trade_value,
+         fp_tier = case_when(fp_value >= 40 ~ "Tier 1",
+                             fp_value >= 30 ~ "Tier 2",
+                             fp_value >= 20 ~ "Tier 3",
+                             TRUE ~ "Tier 4")) %>%
+  group_by(position) %>%
+  mutate(position_rank = rank(fp_ranking))
+
+buy_low_players <- rankings_comparison %>%
+  arrange(desc(value_score)) %>%
+  group_by(position, fp_tier) %>%
+  slice(1:3) %>%
+  filter(value_score >= -4) %>%
+  mutate(player_rank = rank(desc(value_score)),
+         player_type = "Buy Low Players")
+
+sell_high_players <- rankings_comparison %>%
+  arrange(value_score) %>%
+  group_by(position, fp_tier) %>%
+  slice(1:3) %>%
+  filter(value_score < -4) %>%
+  mutate(player_rank = rank(value_score),
+         player_type = "Sell High Players")
+
+buy_low_sell_high <- bind_rows(buy_low_players, sell_high_players)
+
+ggplot(rankings_comparison, aes(x = fp_value, y = trade_value)) + geom_point() + geom_abline()
+
 current_date <- as.Date(now())
 
 if (export_data == "Yes") {
   write_xlsx(output_trades, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Trade Data ", current_date, ".xlsx", sep = ""))
   write_xlsx(output_values, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Player Values ", current_date, ".xlsx", sep = ""))
   write_xlsx(output_last_values, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Last Values ", current_date, ".xlsx", sep = ""))
-  write_xlsx(settings_adjustments, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Settings_Adjustments ", current_date, ".xlsx", sep = ""))
+  write_xlsx(settings_adjustments, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Settings Adjustments ", current_date, ".xlsx", sep = ""))
+  write_xlsx(rankings_comparison, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Rankings Comparison ", current_date, ".xlsx", sep = ""))
+  write_xlsx(buy_low_sell_high, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Buy Low Sell High ", current_date, ".xlsx", sep = ""))
 }
 
 #Fix this next time!!!!
