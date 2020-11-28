@@ -9,11 +9,11 @@ library(lubridate)
 library(writexl)
 library(readxl)
 
-trade_data <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/Trade Data/tradedata-10-13-2020.csv")
+trade_data <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/Trade Data/tradedata-11-28-2020.csv")
 fantasypros <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/Data/FantasyPros_2020_Dynasty_ALL_Rankings.csv")
 
 date_start <- as.Date("2020-07-01")
-players_in_init_optimization <- 200
+players_in_init_optimization <- 150
 min_trades_for_val <- 5
 average_player_value <- 20
 export_data <- "Yes"
@@ -28,7 +28,7 @@ remove_brackets <- function (x) {
 }
 
 remove_suffixes <- function (x) {
-  x <- gsub(" Fuller V", "Fuller", x)
+  x <- gsub(" Fuller V", " Fuller", x)
   x <- gsub(" IV", "", x)
   x <- gsub(" III", "", x)
   x <- gsub(" II", "", x)
@@ -43,10 +43,10 @@ player_details <- read_excel("C:/Users/alexc/Desktop/Fantasy Football/Data/Playe
 
 #Add fields to the data so that it is easier to use
 trade_data_2 <- trade_data %>%
-  filter(league_settings.is_dynasty == "true") %>%
-  rename(num_teams = league_settings.num_teams,
-         num_qbs = league_settings.num_qbs,
-         ppr_type = league_settings.ppr) %>%
+  filter(is_dynasty == "true") %>%
+  rename(#num_teams = league_settings.num_teams,
+  #       num_qbs = league_settings.num_qbs,
+          ppr_type = ppr) %>%
   filter(num_qbs %in% c(1, 2),
          num_teams %in% c(10, 12, 14, 16),
          ppr_type %in% c(0, 0.5, 1)) %>%
@@ -239,7 +239,8 @@ all_player_1 <- trade_data_2[rep(seq_len(nrow(trade_data_2)), 6), ] %>%
          is.na(s2_p1_player) | !is.na(s2_p1_position),
          is.na(s2_p2_player) | !is.na(s2_p2_position),
          is.na(s2_p3_player) | !is.na(s2_p3_position)) %>%
-  select(-c(data_num:league_settings.site), -c(league_settings.keepers:league_settings._id),
+  select(-c(data_num:league_settings),
+         #-c(league_settings.keepers:league_settings._id),
          -c(side1_no_brackets:side2_no_brackets), -c(side1_player1:side2_player3)) %>%
   mutate(qb_trade_na = ifelse((s1_p1_position == "QB" | s1_p2_position == "QB" | s1_p3_position == "QB" |
            s2_p1_position == "QB" | s2_p2_position == "QB" | s2_p3_position == "QB"), "Yes", "No"),
@@ -581,7 +582,7 @@ adj_player_values_df <- replace_mins(adj_player_values_df_no_min)
 }
 
 #Create the output for the adjusted data
-player_to_graph <- "Christian McCaffrey"
+player_to_graph <- "Dwayne Haskins"
 
 player_line <- adj_player_values_df %>%
   filter(player_name == player_to_graph)
@@ -591,19 +592,29 @@ last_player_value_tbl <- player_line %>%
 
 last_player_value <- last_player_value_tbl$player_value
 
+output_values_1 <- adj_player_values_df %>%
+  filter(!(grepl("2019", player_name) | grepl("2020", player_name)))
+
+end_values_1 <- output_values_1 %>%
+  filter(trade_date == date_end)
+
+average_player <- mean(end_values_1$player_value)
+player_adjustment <- average_player_value / average_player
+
 output_trades <- adj_player_2 %>%
   mutate(fill_val = factor(fill_val, levels = c("Traded for 3 players", "Traded for 2 players", "Traded for 1 player",
-                                                "Traded with 1 other player", "Traded with 2 other players")), player_value = implied_value) %>%
+                                                "Traded with 1 other player", "Traded with 2 other players")), player_value = implied_value * player_adjustment) %>%
   select(player_name = s1_p1_player, trade_date, player_value, color_val, fill_val, s1_players, s2_players)  %>%
   filter(!(grepl("2019", player_name) | grepl("2020", player_name)))
 
 output_values <- adj_player_values_df %>%
-  filter(!(grepl("2019", player_name) | grepl("2020", player_name)))
-
-date_end_minus_14 <- date_end - 14
+  filter(!(grepl("2019", player_name) | grepl("2020", player_name))) %>%
+  mutate(player_value = player_value * player_adjustment)
 
 end_values <- output_values %>%
   filter(trade_date == date_end)
+
+date_end_minus_14 <- date_end - 14
 
 end_minus_14_values <- output_values %>%
   filter(trade_date == date_end_minus_14) %>%
@@ -655,7 +666,8 @@ g + annotate("label",x = date_end, y = last_player_value + 4 * g_breaks_adj,labe
 
 #Compare the rankings to FantasyPros
 fantasypros_2 <- fantasypros %>%
-  mutate(player_name = remove_suffixes(str_sub((str_match(PLAYER.NAME, ".+?(?<=\\()")), end = -3))) %>%
+  #mutate(player_name = remove_suffixes(str_sub((str_match(PLAYER.NAME, ".+?(?<=\\()")), end = -3))) %>%
+  mutate(player_name = remove_suffixes(PLAYER.NAME)) %>%
   inner_join(output_last_values, by = "player_name") %>%
   select(player_name) %>%
   mutate(fp_ranking = 1:n())
@@ -672,7 +684,7 @@ values_by_rank <- rankings_combined %>%
 rankings_comparison <- rankings_combined %>%
   left_join(values_by_rank, by = c("fp_ranking" = "ranking")) %>%
   select(player_name, position, trade_value = player_value, change_last_14, fp_value, trade_ranking, fp_ranking) %>%
-  mutate(value_score = fp_value - trade_value,
+  mutate(value_score = ifelse(is.na(fp_value), 0, trade_value - fp_value),
          fp_tier = case_when(fp_value >= 40 ~ "Tier 1",
                              fp_value >= 30 ~ "Tier 2",
                              fp_value >= 20 ~ "Tier 3",
@@ -681,19 +693,19 @@ rankings_comparison <- rankings_combined %>%
   mutate(position_rank = rank(fp_ranking))
 
 buy_low_players <- rankings_comparison %>%
-  arrange(desc(value_score)) %>%
-  group_by(position, fp_tier) %>%
-  slice(1:3) %>%
-  filter(value_score >= -4) %>%
-  mutate(player_rank = rank(desc(value_score)),
-         player_type = "Buy Low Players")
-
-sell_high_players <- rankings_comparison %>%
   arrange(value_score) %>%
   group_by(position, fp_tier) %>%
   slice(1:3) %>%
-  filter(value_score < -4) %>%
+  filter(value_score <= 0) %>%
   mutate(player_rank = rank(value_score),
+         player_type = "Buy Low Players")
+
+sell_high_players <- rankings_comparison %>%
+  arrange(desc(value_score)) %>%
+  group_by(position, fp_tier) %>%
+  slice(1:3) %>%
+  filter(value_score > 0) %>%
+  mutate(player_rank = rank(desc(value_score)),
          player_type = "Sell High Players")
 
 buy_low_sell_high <- bind_rows(buy_low_players, sell_high_players)
@@ -705,7 +717,6 @@ current_date <- as.Date(now())
 if (export_data == "Yes") {
   write_xlsx(output_trades, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Trade Data ", current_date, ".xlsx", sep = ""))
   write_xlsx(output_values, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Player Values ", current_date, ".xlsx", sep = ""))
-  write_xlsx(output_last_values, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Last Values ", current_date, ".xlsx", sep = ""))
   write_xlsx(settings_adjustments, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Settings Adjustments ", current_date, ".xlsx", sep = ""))
   write_xlsx(rankings_comparison, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Rankings Comparison ", current_date, ".xlsx", sep = ""))
   write_xlsx(buy_low_sell_high, paste("C:/Users/alexc/Desktop/Fantasy Football/Output Data/Buy Low Sell High ", current_date, ".xlsx", sep = ""))
