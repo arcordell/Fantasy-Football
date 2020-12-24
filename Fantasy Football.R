@@ -9,7 +9,7 @@ library(lubridate)
 library(writexl)
 library(readxl)
 
-trade_data <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/Trade Data/tradedata-11-28-2020.csv")
+trade_data <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/Trade Data/tradedata-12-15-2020.csv")
 fantasypros <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/Data/FantasyPros_2020_Dynasty_ALL_Rankings.csv")
 
 date_start <- as.Date("2020-07-01")
@@ -247,11 +247,13 @@ all_player_1 <- trade_data_2[rep(seq_len(nrow(trade_data_2)), 6), ] %>%
          qb_trade = ifelse(is.na(qb_trade_na), "No", "Yes")) %>%
   filter(!(num_qbs == 2 & qb_trade == "Yes"))
 
-time_constant <- 10
+time_constant <- 20
 
 date_end <- max(all_player_1$trade_date)
 date_list <- data.frame(date_val = seq(date_start, date_end, by="days"))
 
+#date_1 <- as.Date("2020-12-01")
+#trade_df <- all_player_2
 #Create the function to get the weighted average of the player values
 find_player_values <- function(date_1, trade_df) {
 
@@ -259,7 +261,14 @@ players_by_date_1 <- trade_df %>%
   group_by(trade_date, player_name = s1_p1_player) %>%
   summarize(average_value = mean(implied_value), trade_count = n()) %>%
   mutate(days_since_trade = as.numeric(difftime(date_1, trade_date, units = c("days")))) %>%
-  filter(days_since_trade >= 0)
+  filter(days_since_trade >= 0) %>%
+  arrange(player_name, trade_date) %>%
+  group_by(player_name) %>%
+  mutate(trade_running_total = cumsum(trade_count))
+
+max_trade_count_by_player <- players_by_date_1 %>%
+  group_by(player_name) %>%
+  summarize(max_trade_count = max(trade_running_total))
 
 trade_count <- players_by_date_1 %>%
   group_by(player_name) %>%
@@ -267,10 +276,13 @@ trade_count <- players_by_date_1 %>%
   filter(player_trade_count >= min_trades_for_val)
 
 players_by_date_2 <- players_by_date_1 %>%
+  inner_join(max_trade_count_by_player, by = "player_name") %>%
   inner_join(trade_count, by = "player_name")
 
 player_values <- players_by_date_2 %>%
-  mutate(trade_weight = trade_count * exp(-days_since_trade/time_constant), weighted_value = average_value * trade_weight) %>%
+  mutate(trades_since_trade = max_trade_count - trade_running_total) %>%
+  #filter(trades_since_trade <= 25) %>%
+  mutate(trade_weight = trade_count * exp(-trades_since_trade/time_constant), weighted_value = average_value * trade_weight) %>%
   group_by(player_name) %>%
   summarize(player_value = sum(weighted_value) / sum(trade_weight))
 
@@ -396,7 +408,7 @@ right = function(text, num_char) {
   substr(text, nchar(text) - (num_char-1), nchar(text))
 }
 
-player_to_graph <- "Patrick Mahomes"
+player_to_graph <- "Justin Jefferson"
 
 player_line <- player_values_df_2 %>%
   filter(player_name == player_to_graph)
@@ -582,16 +594,6 @@ adj_player_values_df <- replace_mins(adj_player_values_df_no_min)
 }
 
 #Create the output for the adjusted data
-player_to_graph <- "Dwayne Haskins"
-
-player_line <- adj_player_values_df %>%
-  filter(player_name == player_to_graph)
-
-last_player_value_tbl <- player_line %>%
-  filter(trade_date == date_end)
-
-last_player_value <- last_player_value_tbl$player_value
-
 output_values_1 <- adj_player_values_df %>%
   filter(!(grepl("2019", player_name) | grepl("2020", player_name)))
 
@@ -630,6 +632,17 @@ output_last_values <- end_values %>%
   mutate(position = case_when(!is.na(Position) ~ Position,
                                  grepl("Round", player_name) ~ "Pick"),
   ranking = 1:n())
+
+#Graph the players
+player_to_graph <- "James Robinson"
+
+player_line <- output_values %>%
+  filter(player_name == player_to_graph)
+
+last_player_value_tbl <- player_line %>%
+  filter(trade_date == date_end)
+
+last_player_value <- last_player_value_tbl$player_value
 
 one_player <- output_trades %>%
   filter(player_name == player_to_graph)
