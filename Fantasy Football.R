@@ -16,6 +16,7 @@ date_start <- as.Date("2020-07-01")
 players_in_init_optimization <- 100
 min_trades_for_val <- 5
 average_player_value <- 20
+time_constant <- 20
 export_data <- "Yes"
 
 #https://www.rdocumentation.org/packages/glmc/versions/0.3-1/topics/glmc
@@ -242,20 +243,15 @@ all_player_1 <- trade_data_2[rep(seq_len(nrow(trade_data_2)), 6), ] %>%
          is.na(s2_p2_player) | !is.na(s2_p2_position),
          is.na(s2_p3_player) | !is.na(s2_p3_position)) %>%
   select(-c(data_num:league_settings),
-         #-c(league_settings.keepers:league_settings._id),
          -c(side1_no_brackets:side2_no_brackets), -c(side1_player1:side2_player3)) %>%
   mutate(qb_trade_na = ifelse((s1_p1_position == "QB" | s1_p2_position == "QB" | s1_p3_position == "QB" |
            s2_p1_position == "QB" | s2_p2_position == "QB" | s2_p3_position == "QB"), "Yes", "No"),
          qb_trade = ifelse(is.na(qb_trade_na), "No", "Yes")) %>%
   filter(!(num_qbs == 2 & qb_trade == "Yes"))
 
-time_constant <- 20
-
 date_end <- max(all_player_1$trade_date)
 date_list <- data.frame(date_val = seq(date_start, date_end, by="days"))
 
-#date_1 <- as.Date("2020-12-01")
-#trade_df <- all_player_2
 #Create the function to get the weighted average of the player values
 find_player_values <- function(date_1, trade_df) {
 
@@ -412,16 +408,6 @@ right = function(text, num_char) {
   substr(text, nchar(text) - (num_char-1), nchar(text))
 }
 
-player_to_graph <- "John Brown"
-
-player_line <- player_values_df_2 %>%
-  filter(player_name == player_to_graph)
-
-last_player_value_tbl <- player_line %>%
-  filter(trade_date == date_end)
-
-last_player_value <- last_player_value_tbl$player_value
-
 output_trades <- all_player_2 %>%
   mutate(player_value = implied_value) %>%
   select(player_name = s1_p1_player, trade_date, player_value, color_val, s1_players, s2_players)  %>%
@@ -446,6 +432,21 @@ output_last_values <- end_values %>%
   select(-player_value_minus_14) %>%
   arrange(desc(player_value)) %>%
   mutate(ranking = 1:n())
+
+final_player_values <- player_values_df_2 %>%
+  filter(trade_date == date_end)
+
+rm(X, objective, problem, result, player_values_by_date_1, player_values_by_date_2)
+
+graph_a_player <- function(player_to_graph, trade_table, value_table) {
+
+player_line <- value_table %>%
+  filter(player_name == player_to_graph)
+
+last_player_value_tbl <- player_line %>%
+  filter(trade_date == date_end)
+
+last_player_value <- last_player_value_tbl$player_value
 
 one_player <- output_trades %>%
   filter(player_name == player_to_graph)
@@ -478,10 +479,9 @@ g + annotate("label",x = date_end, y = last_player_value + 4 * g_breaks_adj,labe
   geom_label(data = last_player_value_tbl, aes(x = date_end, y = last_player_value + 2.5 * g_breaks_adj,label = paste(round(last_player_value, 1), sep = "")),
            vjust = 1, size = 8, color = "black", fill = "lightsteelblue1", label.padding = unit(0.4, "cm"))
 
-final_player_values <- player_values_df_2 %>%
-  filter(trade_date == date_end)
+}
 
-rm(X, objective, problem, result, player_values_by_date_1, player_values_by_date_2)
+graph_a_player("John Brown", output_trades, player_values_df_2)
 
 #Find the adjustments to apply to different league settings
 rel_data <- all_player_2 %>%
@@ -635,51 +635,10 @@ output_last_values <- end_values %>%
                                  grepl("Round", player_name) ~ "Pick"),
   ranking = 1:n())
 
-#Graph the players
-player_to_graph <- "Jonathan Taylor"
-
-player_line <- output_values %>%
-  filter(player_name == player_to_graph)
-
-last_player_value_tbl <- player_line %>%
-  filter(trade_date == date_end)
-
-last_player_value <- last_player_value_tbl$player_value
-
-one_player <- output_trades %>%
-  filter(player_name == player_to_graph)
-
-g <- ggplot(data = one_player, aes(x = trade_date, y = player_value)) +
-  geom_point(aes(color = color_val), size = 4, alpha = 0.8) +
-  geom_line(data = player_line, lwd = 2, alpha = 0.4) +
-  theme_fivethirtyeight() + 
-  scale_color_manual(values = c("More players on the other side" = "blue", "Same number of players on each side" = "gray", "More players on the player's side" = "red")) +
-  theme(legend.position = "bottom",
-        legend.title=element_blank(),
-        legend.text = element_text(size = 16),
-        title = element_text(size = 26),
-        axis.text = element_text(size = 16),
-        axis.title = element_text(),
-        axis.title.x = element_text(size = 24, vjust = -1),
-        axis.title.y = element_text(size = 24, vjust = 2),
-        panel.background = element_rect(fill = "white")) +
-  labs(title = paste(player_to_graph, "'", ifelse(right(player_to_graph, 1) != "s","s",""), " value over time in the 2020 season", sep = ""),
-       x = "Trade date",
-       y = "Value") +
-  geom_vline(xintercept = date_end, color = "black", linetype = 3, lwd = 1) +
-  
-  xlim(date_start, date_end + 3)
-
-g_breaks_adj <- (ggplot_build(g)$layout$panel_params[[1]]$y.range[2] - ggplot_build(g)$layout$panel_params[[1]]$y.range[1]) / 28.7
-
-g + annotate("label",x = date_end, y = last_player_value + 4 * g_breaks_adj,label = paste(sub(" 0", " ", format(date_end, "%B %d")), " Value", sep = ""),
-           vjust = 1, size = 8, color = "black", fill = "white", fontface="bold", label.size = 0) +
-  geom_label(data = last_player_value_tbl, aes(x = date_end, y = last_player_value + 2.5 * g_breaks_adj,label = paste(round(last_player_value, 1), sep = "")),
-           vjust = 1, size = 8, color = "black", fill = "lightsteelblue1", label.padding = unit(0.4, "cm"))
+graph_a_player("Jonathan Taylor", output_trades, output_values)
 
 #Compare the rankings to FantasyPros
 fantasypros_2 <- fantasypros %>%
-  #mutate(player_name = remove_suffixes(str_sub((str_match(PLAYER.NAME, ".+?(?<=\\()")), end = -3))) %>%
   mutate(player_name = remove_suffixes(PLAYER.NAME)) %>%
   inner_join(output_last_values, by = "player_name") %>%
   select(player_name) %>%
