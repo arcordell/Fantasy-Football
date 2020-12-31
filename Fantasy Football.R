@@ -9,11 +9,11 @@ library(lubridate)
 library(writexl)
 library(readxl)
 
-trade_data <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/Trade Data/tradedata-12-15-2020.csv")
+trade_data <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/Trade Data/tradedata-12-29-2020.csv")
 fantasypros <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/Data/FantasyPros_2020_Dynasty_ALL_Rankings.csv")
 
 date_start <- as.Date("2020-07-01")
-players_in_init_optimization <- 150
+players_in_init_optimization <- 100
 min_trades_for_val <- 5
 average_player_value <- 20
 export_data <- "Yes"
@@ -36,6 +36,14 @@ remove_suffixes <- function (x) {
   x <- gsub("\\.", "", x)
 }
 
+count_not_na <- function(...) {
+  not_na_count <- 0
+    for(i in list(...)) {
+        not_na_count = not_na_count + ifelse(is.na(i), 0, 1)
+    }
+  return(not_na_count)
+}
+
 player_details <- read_excel("C:/Users/alexc/Desktop/Fantasy Football/Data/Player Details.xlsx") %>%
   filter(Position %in% c("QB", "RB", "WR", "TE")) %>%
   select(Player, Position) %>%
@@ -44,9 +52,7 @@ player_details <- read_excel("C:/Users/alexc/Desktop/Fantasy Football/Data/Playe
 #Add fields to the data so that it is easier to use
 trade_data_2 <- trade_data %>%
   filter(is_dynasty == "true") %>%
-  rename(#num_teams = league_settings.num_teams,
-  #       num_qbs = league_settings.num_qbs,
-          ppr_type = ppr) %>%
+  rename(ppr_type = ppr) %>%
   filter(num_qbs %in% c(1, 2),
          num_teams %in% c(10, 12, 14, 16),
          ppr_type %in% c(0, 0.5, 1)) %>%
@@ -59,7 +65,7 @@ trade_data_2 <- trade_data %>%
   separate(side1_no_brackets, c("side1_player1", "side1_player2", "side1_player3", "side1_player4"), sep = ",", remove = FALSE) %>%
   separate(side2_no_brackets, c("side2_player1", "side2_player2", "side2_player3", "side2_player4"), sep = ",", remove = FALSE) %>%
   #Filter to trades when there are 3 or fewer players on each side
-  filter(is.na(side1_player4), is.na(side2_player4), is.na(side1_player2) | is.na(side2_player2), side1 != '["]', side2 != '["]', str_length(side1) >= 4, str_length(side2) >= 4) %>%
+  filter(is.na(side1_player4), is.na(side2_player4), side1 != '["]', side2 != '["]', str_length(side1) >= 4, str_length(side2) >= 4) %>%
   select(-c(side1_player4, side2_player4)) %>%
   filter(side1_player1 != side2_player1 | is.na(side1_player1) | is.na(side2_player1),
          side1_player1 != side2_player2 | is.na(side1_player1) | is.na(side2_player2),
@@ -131,7 +137,7 @@ Y <- rep(0, nrow(X))
 
 #Find the player values
 objective <- Minimize(sum((Y - X %*% betaHat)^2))
-problem <- Problem(objective, constraints = list(betaHat >= 0, mean(betaHat) == average_player_value))
+problem <- Problem(objective, constraints = list(betaHat >= 1, mean(betaHat) == average_player_value))
 result <- solve(problem)
 player_values <- data.frame(player_name = (names(player_wide[-c(1:2)])), value = round(result$getValue(betaHat), 1))
 
@@ -196,19 +202,15 @@ all_player_1 <- trade_data_2[rep(seq_len(nrow(trade_data_2)), 6), ] %>%
   left_join(player_values, by = c("s2_p3_player" = "player_name")) %>%
   rename(s2_p3_player_value = value) %>%
   mutate_at(vars(s1_p1_player_value:s2_p3_player_value), ~replace(., is.na(.), 0)) %>%
-  mutate(implied_value = s2_p1_player_value + s2_p2_player_value + s2_p3_player_value - s1_p2_player_value - s1_p3_player_value,
-         color_val = case_when(
-           !is.na(s1_p2_player) ~ "red",
-           !is.na(s2_p2_player) ~ "blue",
-           TRUE ~ "gray"
-         ),
-         fill_val = case_when(
-          !is.na(s1_p2_player) & !is.na(s1_p3_player) ~ "Traded with 2 other players",
-          !is.na(s2_p2_player) & !is.na(s2_p3_player) ~ "Traded for 3 players",
-          !is.na(s1_p2_player) | !is.na(s1_p3_player) ~ "Traded with 1 other player",
-          !is.na(s2_p2_player) | !is.na(s2_p3_player) ~ "Traded for 2 players",
-          TRUE ~ "Traded for 1 player"
-         )) %>%
+  mutate(side1_player_count = count_not_na(s1_p1_player, s1_p2_player, s1_p3_player),
+         side2_player_count = count_not_na(s2_p1_player, s2_p2_player, s2_p3_player),
+         side1_minus_side2 = side1_player_count - side2_player_count,
+           implied_value = s2_p1_player_value + s2_p2_player_value + s2_p3_player_value - s1_p2_player_value - s1_p3_player_value,
+         color_val = factor(case_when(
+           side1_minus_side2 > 0 ~ "More players on the player's side",
+           side1_minus_side2 == 0 ~ "Same number of players on each side",
+           TRUE ~ "More players on the other side"
+         ), levels = c("More players on the other side", "Same number of players on each side", "More players on the player's side"))) %>%
   left_join(player_details, by = c("s1_p1_player" = "Player")) %>%
   mutate(s1_p1_position = case_when(!is.na(Position) ~ Position,
                                  grepl("Round", s1_p1_player) ~ "Pick")) %>%
@@ -281,10 +283,12 @@ players_by_date_2 <- players_by_date_1 %>%
 
 player_values <- players_by_date_2 %>%
   mutate(trades_since_trade = max_trade_count - trade_running_total) %>%
-  #filter(trades_since_trade <= 25) %>%
-  mutate(trade_weight = trade_count * exp(-trades_since_trade/time_constant), weighted_value = average_value * trade_weight) %>%
+  mutate(trade_weight = trade_count * exp(-ifelse(days_since_trade < trades_since_trade & grepl("Round", player_name),
+                                                  days_since_trade, trades_since_trade)
+                                          /time_constant), weighted_value = average_value * trade_weight) %>%
   group_by(player_name) %>%
-  summarize(player_value = sum(weighted_value) / sum(trade_weight))
+  summarize(player_value = sum(weighted_value) / sum(trade_weight)) %>%
+  mutate(player_value = ifelse(player_value < 1, 1, player_value))
 
 date_vector <- rep(date_1, nrow(player_values))
 player_values_1_date <- data.frame(trade_date = as.Date(date_vector), player_values)
@@ -408,7 +412,7 @@ right = function(text, num_char) {
   substr(text, nchar(text) - (num_char-1), nchar(text))
 }
 
-player_to_graph <- "Justin Jefferson"
+player_to_graph <- "John Brown"
 
 player_line <- player_values_df_2 %>%
   filter(player_name == player_to_graph)
@@ -419,9 +423,8 @@ last_player_value_tbl <- player_line %>%
 last_player_value <- last_player_value_tbl$player_value
 
 output_trades <- all_player_2 %>%
-  mutate(fill_val = factor(fill_val, levels = c("Traded for 3 players", "Traded for 2 players", "Traded for 1 player",
-                                                "Traded with 1 other player", "Traded with 2 other players")), player_value = implied_value) %>%
-  select(player_name = s1_p1_player, trade_date, player_value, color_val, fill_val, s1_players, s2_players)  %>%
+  mutate(player_value = implied_value) %>%
+  select(player_name = s1_p1_player, trade_date, player_value, color_val, s1_players, s2_players)  %>%
   filter(!(grepl("2019", player_name) | grepl("2020", player_name)))
 
 output_values <- player_values_df_2 %>%
@@ -448,12 +451,10 @@ one_player <- output_trades %>%
   filter(player_name == player_to_graph)
 
 g <- ggplot(data = one_player, aes(x = trade_date, y = player_value)) +
-  geom_point(aes(color = color_val, fill = fill_val), size = 4, shape = 21, alpha = 0.8) +
+  geom_point(aes(color = color_val), size = 4, alpha = 0.8) +
   geom_line(data = player_line, lwd = 2, alpha = 0.4) +
   theme_fivethirtyeight() + 
-  scale_color_manual(values = c("blue" = "blue", "gray" = "darkgray", "red" = "red"), guide = FALSE) +
-  scale_fill_manual(values = c("Traded for 3 players" = "darkblue", "Traded with 2 other players" = "red3", "Traded for 2 players" = "lightblue",
-                               "Traded for 1 player" = "gray", "Traded with 1 other player" = "indianred1")) +
+  scale_color_manual(values = c("More players on the other side" = "blue", "Same number of players on each side" = "gray", "More players on the player's side" = "red")) +
   theme(legend.position = "bottom",
         legend.title=element_blank(),
         legend.text = element_text(size = 16),
@@ -553,10 +554,12 @@ adj_player_values_by_date <- apply(date_list, 1, find_player_values, trade_df = 
 adj_player_values_df_no_min <- do.call(rbind.data.frame, adj_player_values_by_date)
 adj_player_values_df <- replace_mins(adj_player_values_df_no_min)
 
+adj_player_2 <- adj_player_1
+
 #Run the model 10 more times to reach an equilibrium
 for (i in 1:10) {
 
-adj_player_2 <- adj_player_1 %>%
+adj_player_2 <- adj_player_2 %>%
   select(-implied_value, -c(s1_p1_value:s2_p3_value)) %>%
   left_join(player_values_df_2, by = c("s1_p1_player" = "player_name", "trade_date")) %>%
   rename(s1_p1_value = player_value) %>%
@@ -604,9 +607,8 @@ average_player <- mean(end_values_1$player_value)
 player_adjustment <- average_player_value / average_player
 
 output_trades <- adj_player_2 %>%
-  mutate(fill_val = factor(fill_val, levels = c("Traded for 3 players", "Traded for 2 players", "Traded for 1 player",
-                                                "Traded with 1 other player", "Traded with 2 other players")), player_value = implied_value * player_adjustment) %>%
-  select(player_name = s1_p1_player, trade_date, player_value, color_val, fill_val, s1_players, s2_players)  %>%
+  mutate(player_value = implied_value * player_adjustment) %>%
+  select(player_name = s1_p1_player, trade_date, player_value, color_val, s1_players, s2_players)  %>%
   filter(!(grepl("2019", player_name) | grepl("2020", player_name)))
 
 output_values <- adj_player_values_df %>%
@@ -634,7 +636,7 @@ output_last_values <- end_values %>%
   ranking = 1:n())
 
 #Graph the players
-player_to_graph <- "James Robinson"
+player_to_graph <- "Jonathan Taylor"
 
 player_line <- output_values %>%
   filter(player_name == player_to_graph)
@@ -648,12 +650,10 @@ one_player <- output_trades %>%
   filter(player_name == player_to_graph)
 
 g <- ggplot(data = one_player, aes(x = trade_date, y = player_value)) +
-  geom_point(aes(color = color_val, fill = fill_val), size = 4, shape = 21, alpha = 0.8) +
+  geom_point(aes(color = color_val), size = 4, alpha = 0.8) +
   geom_line(data = player_line, lwd = 2, alpha = 0.4) +
   theme_fivethirtyeight() + 
-  scale_color_manual(values = c("blue" = "blue", "gray" = "darkgray", "red" = "red"), guide = FALSE) +
-  scale_fill_manual(values = c("Traded for 3 players" = "darkblue", "Traded with 2 other players" = "red3", "Traded for 2 players" = "lightblue",
-                               "Traded for 1 player" = "gray", "Traded with 1 other player" = "indianred1")) +
+  scale_color_manual(values = c("More players on the other side" = "blue", "Same number of players on each side" = "gray", "More players on the player's side" = "red")) +
   theme(legend.position = "bottom",
         legend.title=element_blank(),
         legend.text = element_text(size = 16),
