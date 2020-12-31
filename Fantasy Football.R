@@ -15,7 +15,7 @@ fantasypros <- read.csv("C:/Users/alexc/Desktop/Fantasy Football/Data/FantasyPro
 date_start <- as.Date("2020-07-01")
 players_in_init_optimization <- 100
 min_trades_for_val <- 5
-average_player_value <- 20
+input_mean_player_value <- 20
 time_constant <- 20
 export_data <- "Yes"
 
@@ -61,6 +61,8 @@ trade_data_2 <- trade_data %>%
          side1_no_brackets = remove_brackets(side1),
          side2_no_brackets = remove_brackets(side2),
          trade_id = row_number(),
+         num_teams = as.numeric(as.character(num_teams)),
+         ppr_type = as.numeric(as.character(ppr_type)),
          num_qbs = factor(num_qbs)) %>%
   arrange(trade_date) %>%
   separate(side1_no_brackets, c("side1_player1", "side1_player2", "side1_player3", "side1_player4"), sep = ",", remove = FALSE) %>%
@@ -138,7 +140,7 @@ Y <- rep(0, nrow(X))
 
 #Find the player values
 objective <- Minimize(sum((Y - X %*% betaHat)^2))
-problem <- Problem(objective, constraints = list(betaHat >= 1, mean(betaHat) == average_player_value))
+problem <- Problem(objective, constraints = list(betaHat >= 1, mean(betaHat) == input_mean_player_value))
 result <- solve(problem)
 player_values <- data.frame(player_name = (names(player_wide[-c(1:2)])), value = round(result$getValue(betaHat), 1))
 
@@ -603,15 +605,19 @@ output_values_1 <- adj_player_values_df %>%
 end_values_1 <- output_values_1 %>%
   filter(trade_date == date_end)
 
-average_player <- mean(end_values_1$player_value)
-player_adjustment <- average_player_value / average_player
+average_player_by_date <- output_values_1 %>%
+  group_by(trade_date) %>%
+  summarize(mean_player_value = mean(player_value)) %>%
+  mutate(player_adjustment = input_mean_player_value / mean_player_value)
 
 output_trades <- adj_player_2 %>%
+  left_join(average_player_by_date, by = "trade_date") %>%
   mutate(player_value = implied_value * player_adjustment) %>%
   select(player_name = s1_p1_player, trade_date, player_value, color_val, s1_players, s2_players)  %>%
   filter(!(grepl("2019", player_name) | grepl("2020", player_name)))
 
 output_values <- adj_player_values_df %>%
+  left_join(average_player_by_date, by = "trade_date") %>%
   filter(!(grepl("2019", player_name) | grepl("2020", player_name))) %>%
   mutate(player_value = player_value * player_adjustment)
 
